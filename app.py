@@ -1,65 +1,75 @@
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
-from transformers import BartForConditionalGeneration, BartTokenizer
-import torch
+from transformers import pipeline
 from urllib.parse import urlparse, parse_qs
 from fpdf import FPDF
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="YouTube AI Summarizer", layout="centered")
+# --- PAGE SETUP ---
+st.set_page_config(page_title="AI Video Summarizer", layout="centered")
 
-# --- MODEL LOADING (Manual Architecture) ---
+# --- STYLE ---
+st.markdown("""
+    <style>
+    .stButton>button { background-color: #2e7d32; color: white; width: 100%; border-radius: 10px; }
+    .stTextInput>div>div>input { border: 2px solid #2e7d32; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- CACHED AI MODEL ---
 @st.cache_resource
-def load_model_and_tokenizer():
-    # Loading BART model architecture specifically as mentioned in report
-    model_name = "facebook/bart-large-cnn"
-    tokenizer = BartTokenizer.from_pretrained(model_name)
-    model = BartForConditionalGeneration.from_pretrained(model_name)
-    return tokenizer, model
+def load_ai():
+    # Loading the Abstractive Summarizer [cite: 162, 498]
+    return pipeline("summarization", model="facebook/bart-large-cnn")
 
-tokenizer, model = load_model_and_tokenizer()
+summarizer = load_ai()
 
-def extract_video_id(url):
-    query = urlparse(url)
-    if query.hostname == 'youtu.be': return query.path[1:]
-    if query.hostname in ('www.youtube.com', 'youtube.com'):
-        if query.path == '/watch': return parse_qs(query.query).get('v', [None])[0]
+def get_id(url):
+    """Extracts the unique video ID for the API call."""
+    u_pars = urlparse(url)
+    if u_pars.hostname == 'youtu.be': return u_pars.path[1:]
+    if u_pars.hostname in ('www.youtube.com', 'youtube.com'):
+        if u_pars.path == '/watch': return parse_qs(u_pars.query).get('v', [None])[0]
     return None
 
-# --- UI INTERFACE ---
+# --- UI CONTENT [cite: 457-459] ---
 st.title("📺 YouTube Transcript AI Summarizer")
-st.markdown("### Generate Abstractive Summaries & PDF Reports")
+st.subheader("Generate Abstractive Summaries & PDF Reports")
 
-video_url = st.text_input("Enter YouTube Video URL:", placeholder="https://www.youtube.com/watch?v=...")
+link = st.text_input("Enter YouTube Video URL:", placeholder="https://www.youtube.com/watch?v=...")
 
 if st.button("🚀 Process Video & Generate PDF"):
-    vid_id = extract_video_id(video_url)
+    v_id = get_id(link)
     
-    if not vid_id:
-        st.error("❌ Invalid URL.")
+    if not v_id:
+        st.error("❌ Link format not recognized.")
     else:
         try:
-            with st.spinner("Extracting Transcript..."):
-                transcript_data = YouTubeTranscriptApi.get_transcript(vid_id)
-                full_text = " ".join([t['text'] for t in transcript_data])
+            with st.spinner("Step 1: Extracting Transcript..."):
+                # FIXED CALL: Calling the method on the class directly
+                data = YouTubeTranscriptApi.get_transcript(v_id)
+                text = " ".join([i['text'] for i in data])
             
-            with st.spinner("AI Generating Summary..."):
-                # Manual Inference Logic (Avoids pipeline KeyError)
-                inputs = tokenizer([full_text[:3000]], max_length=1024, return_tensors="pt", truncation=True)
-                summary_ids = model.generate(inputs["input_ids"], num_beams=4, max_length=150, early_stopping=True)
-                final_summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+            with st.spinner("Step 2: AI Generating Summary..."):
+                # Limit input to avoid RAM overflow on Streamlit Cloud
+                clean_text = text[:3000] 
+                res = summarizer(clean_text, max_length=130, min_length=30, do_sample=False)
+                summary = res[0]['summary_text']
             
-            st.success("✅ Summarization Successful!")
-            st.write(final_summary)
+            st.success("✅ Content Summarized!")
+            st.info(summary)
 
-            # --- PDF GENERATION [cite: 691-692] ---
+            # --- PDF CREATION [cite: 294, 691] ---
             pdf = FPDF()
             pdf.add_page()
+            pdf.set_font("Arial", 'B', 16)
+            pdf.cell(200, 10, txt="Mini Project: Video Summary Report", ln=True, align='C')
+            pdf.ln(10)
             pdf.set_font("Arial", size=12)
-            pdf.multi_cell(0, 10, txt=f"Summary for Video: {video_url}\n\n{final_summary}")
+            pdf.multi_cell(0, 10, txt=f"Source: {link}\n\nSummary:\n{summary}")
             
-            pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore')
-            st.download_button(label="📥 Download PDF", data=pdf_bytes, file_name="summary.pdf", mime="application/pdf")
+            pdf_out = pdf.output(dest='S').encode('latin-1', 'ignore')
+            st.download_button(label="📥 Download PDF Summary", data=pdf_out, file_name="YouTube_Summary.pdf", mime="application/pdf")
 
         except Exception as e:
             st.error(f"Execution Error: {str(e)}")
+            st.warning("Note: Ensure the video has closed captions/subtitles enabled.")
