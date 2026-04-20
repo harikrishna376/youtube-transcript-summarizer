@@ -1,6 +1,5 @@
 import streamlit as st
 from youtube_transcript_api import YouTubeTranscriptApi
-from transformers import pipeline
 from urllib.parse import urlparse, parse_qs
 from fpdf import FPDF
 
